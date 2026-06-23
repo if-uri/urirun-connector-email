@@ -1,0 +1,18 @@
+version: urirun.flow.v1
+source:
+  nl: "Na node laptop wyeksportuj faktury z lokalnych skrzynek Thunderbirda do Downloads, z podziałem na miesiące od 2026.03 do 2026.05."
+task:
+  id: lenovo-invoice-export
+  title: "Eksport faktur z Thunderbirda na node laptop"
+steps:
+  - id: extract_invoices
+    uri: email://laptop/local/thunderbird/query/extract_invoices
+    payload:
+      start_date: "2026-03-01"
+      end_date: "2026-06-01"
+      months: "2026.03,2026.04,2026.05"
+      downloads_dir: "~/Downloads"
+      dry_run: false
+      group_by_account: false
+      json_out: "~/Downloads/invoice_export_2026.03-2026.05_report.json"
+    depends_on: []
