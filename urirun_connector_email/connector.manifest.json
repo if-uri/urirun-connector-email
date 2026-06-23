@@ -45,9 +45,9 @@
   ],
   "routes": [
     "email://host/inbox/query/list",
-    "email://host/message/query/read",
+    "email://host/local/thunderbird/query/extract_invoices",
     "email://host/message/command/send",
-    "email://host/local/thunderbird/query/extract_invoices"
+    "email://host/message/query/read"
   ],
   "examples": [
     {
@@ -66,5 +66,8 @@
         "body": "..."
       }
     }
+  ],
+  "adapterKinds": [
+    "local-function"
   ]
 }
