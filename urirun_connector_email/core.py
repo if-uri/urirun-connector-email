@@ -21,9 +21,12 @@ registry (``urirun compile`` / ``urirun run``) with only the package importable
 All three routes touch a remote mail server, so the safety gate is urirun's
 ``--execute`` on the registry runner (not a function param). When the route is
 not configured it returns an ``ok: false`` dict quickly without reaching the
-network. Credentials come from the environment, never from the manifest:
-``EMAIL_IMAP_HOST``, ``EMAIL_SMTP_HOST``, ``EMAIL_USER``, ``EMAIL_PASS``
-(``EMAIL_IMAP_PORT`` 993, ``EMAIL_SMTP_PORT`` 587, optional ``EMAIL_FROM``).
+network. Hosts come from the environment (``EMAIL_IMAP_HOST``, ``EMAIL_SMTP_HOST``,
+``EMAIL_IMAP_PORT`` 993, ``EMAIL_SMTP_PORT`` 587, optional ``EMAIL_FROM``). The
+**password is addressed by reference** — pass ``password=getv://EMAIL_PASS`` or
+``secret://keyring/email#pass`` plus ``secret_allow`` and it is resolved through the
+urirun secrets layer (deny-by-default); an empty ``password`` falls back to the
+``EMAIL_PASS`` env var, so existing setups keep working.
 
 The manifest stays prose-only; ``routes``/``uriSchemes`` are derived from the
 declared handlers.
@@ -34,6 +37,7 @@ from __future__ import annotations
 import email
 import imaplib
 import os
+import re
 import smtplib
 from email.header import decode_header, make_header
 from email.message import EmailMessage
@@ -50,21 +54,47 @@ conn = urirun.connector(CONNECTOR_ID, scheme="email")
 
 # --- config + helpers (real implementation) -------------------------------
 
-def _imap_cfg() -> dict | None:
+def _resolve_secret(value: str, secret_allow: str = "") -> str:
+    """Resolve a credential that may be a secret *reference*, via the urirun secrets layer.
+
+    ``value`` may be a literal, a ``secret://``/``getv://`` reference, or a ``{getv:NAME}`` /
+    ``{secret:...}`` placeholder. References resolve under a deny-by-default allow-list
+    (``secret_allow`` globs); a literal passes through; empty returns ''. Keeps the password
+    addressed by reference instead of the connector reading it from the process env itself.
+    """
+    value = (value or "").strip()
+    if not value:
+        return ""
+    try:
+        from urirun.runtime import secrets as _secrets
+    except Exception:  # noqa: BLE001 - older urirun without the secrets layer
+        return value if ("://" not in value and "{" not in value) else ""
+    allow = [p for p in re.split(r"[,\s]+", secret_allow or "") if p]
+    if _secrets.has_secret(value):
+        return _secrets.fill_secrets(value, execute=True, allow=allow)
+    if value.startswith(("secret://", "getv://")):
+        return _secrets.resolve(value, execute=True, allow=allow).reveal()
+    return value
+
+
+def _imap_cfg(user: str = "", password: str = "", secret_allow: str = "") -> dict | None:
     host = os.getenv("EMAIL_IMAP_HOST")
     if not host:
         return None
     return {"host": host, "port": int(os.getenv("EMAIL_IMAP_PORT", "993")),
-            "user": os.getenv("EMAIL_USER", ""), "password": os.getenv("EMAIL_PASS", "")}
+            "user": user or os.getenv("EMAIL_USER", ""),
+            "password": _resolve_secret(password, secret_allow) or os.getenv("EMAIL_PASS", "")}
 
 
-def _smtp_cfg() -> dict | None:
+def _smtp_cfg(user: str = "", password: str = "", secret_allow: str = "") -> dict | None:
     host = os.getenv("EMAIL_SMTP_HOST")
     if not host:
         return None
+    resolved_user = user or os.getenv("EMAIL_USER", "")
     return {"host": host, "port": int(os.getenv("EMAIL_SMTP_PORT", "587")),
-            "user": os.getenv("EMAIL_USER", ""), "password": os.getenv("EMAIL_PASS", ""),
-            "from": os.getenv("EMAIL_FROM") or os.getenv("EMAIL_USER", "")}
+            "user": resolved_user,
+            "password": _resolve_secret(password, secret_allow) or os.getenv("EMAIL_PASS", ""),
+            "from": os.getenv("EMAIL_FROM") or resolved_user}
 
 
 def _decode(value: str | None) -> str:
@@ -101,9 +131,18 @@ def _message_text(message: email.message.Message, limit: int) -> str:
 
 @conn.handler("inbox/query/list", isolated=True,
               meta={"label": "List recent inbox messages"})
-def inbox_list(folder: str = "INBOX", limit: int = 10) -> dict[str, Any]:
-    """List recent message headers from an IMAP folder."""
-    cfg = _imap_cfg()
+def inbox_list(folder: str = "INBOX", limit: int = 10,
+               user: str = "", password: str = "", secret_allow: str = "") -> dict[str, Any]:
+    """List recent message headers from an IMAP folder.
+
+    ``password`` may be a secret *reference* (``getv://EMAIL_PASS`` / ``secret://keyring/...``)
+    resolved through the secrets layer under ``secret_allow`` (deny-by-default); falls back to
+    ``EMAIL_PASS`` env when empty. ``user`` overrides ``EMAIL_USER``.
+    """
+    try:
+        cfg = _imap_cfg(user, password, secret_allow)
+    except PermissionError as exc:
+        return urirun.fail(f"credential denied by policy (add it to secret_allow): {exc}", connector=CONNECTOR_ID)
     if not cfg:
         return _not_configured("imap")
     try:
@@ -125,11 +164,15 @@ def inbox_list(folder: str = "INBOX", limit: int = 10) -> dict[str, Any]:
 
 @conn.handler("message/query/read", isolated=True,
               meta={"label": "Read one message"})
-def message_read(uid: str = "", folder: str = "INBOX", max: int = 4000) -> dict[str, Any]:
-    """Read one message body from an IMAP folder."""
+def message_read(uid: str = "", folder: str = "INBOX", max: int = 4000,
+                 user: str = "", password: str = "", secret_allow: str = "") -> dict[str, Any]:
+    """Read one message body from an IMAP folder. ``password``/``secret_allow`` as in ``inbox_list``."""
     if not uid:
         return urirun.fail("uid is required", connector=CONNECTOR_ID)
-    cfg = _imap_cfg()
+    try:
+        cfg = _imap_cfg(user, password, secret_allow)
+    except PermissionError as exc:
+        return urirun.fail(f"credential denied by policy (add it to secret_allow): {exc}", connector=CONNECTOR_ID)
     if not cfg:
         return _not_configured("imap")
     try:
@@ -148,11 +191,15 @@ def message_read(uid: str = "", folder: str = "INBOX", max: int = 4000) -> dict[
 
 @conn.handler("message/command/send", isolated=True,
               meta={"label": "Send a message"})
-def send(to: str = "", subject: str = "", body: str = "", cc: str = "") -> dict[str, Any]:
-    """Send a message over SMTP."""
+def send(to: str = "", subject: str = "", body: str = "", cc: str = "",
+         user: str = "", password: str = "", secret_allow: str = "") -> dict[str, Any]:
+    """Send a message over SMTP. ``password``/``secret_allow`` as in ``inbox_list``."""
     if not to:
         return urirun.fail("to is required", connector=CONNECTOR_ID)
-    cfg = _smtp_cfg()
+    try:
+        cfg = _smtp_cfg(user, password, secret_allow)
+    except PermissionError as exc:
+        return urirun.fail(f"credential denied by policy (add it to secret_allow): {exc}", connector=CONNECTOR_ID)
     if not cfg:
         return urirun.fail("set EMAIL_SMTP_HOST + EMAIL_USER + EMAIL_PASS to send", connector=CONNECTOR_ID)
     message = EmailMessage()

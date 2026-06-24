@@ -100,6 +100,35 @@ def test_send_uses_smtp(monkeypatch) -> None:
     assert sent["host"] == "smtp.example.com" and sent["tls"] is True
 
 
+def test_send_resolves_password_secret_reference(monkeypatch) -> None:
+    monkeypatch.setenv("EMAIL_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("EMAIL_USER", "me@example.com")
+    monkeypatch.delenv("EMAIL_PASS", raising=False)  # NOT in env -> must come via reference
+    monkeypatch.setenv("MY_MAIL_SECRET", "hunter2")
+    seen: dict = {}
+
+    class _SMTP:
+        def __init__(self, host, port): seen["host"] = host
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, user, pw): seen["pw"] = pw
+        def send_message(self, msg): pass
+
+    monkeypatch.setattr(core.smtplib, "SMTP", _SMTP)
+
+    # Reference resolves under an allow-list -> the real password reaches SMTP login.
+    ok = send(to="x@y.com", subject="s", body="b",
+              password="getv://MY_MAIL_SECRET", secret_allow="getv://MY_MAIL_SECRET")
+    assert ok["ok"] is True
+    assert seen["pw"] == "hunter2"
+
+    # Same reference without the allow-list is denied by policy (deny-by-default).
+    denied = send(to="x@y.com", subject="s", body="b", password="getv://MY_MAIL_SECRET")
+    assert denied["ok"] is False
+    assert "denied by policy" in denied["error"]
+
+
 # --- local thunderbird extraction tests -----------------------------------
 
 def _make_mbox(dir_path: str, mbox_name: str, messages: list[str]) -> str:
