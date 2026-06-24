@@ -37,7 +37,6 @@ from __future__ import annotations
 import email
 import imaplib
 import os
-import re
 import smtplib
 from email.header import decode_header, make_header
 from email.message import EmailMessage
@@ -54,27 +53,9 @@ conn = urirun.connector(CONNECTOR_ID, scheme="email")
 
 # --- config + helpers (real implementation) -------------------------------
 
-def _resolve_secret(value: str, secret_allow: str = "") -> str:
-    """Resolve a credential that may be a secret *reference*, via the urirun secrets layer.
-
-    ``value`` may be a literal, a ``secret://``/``getv://`` reference, or a ``{getv:NAME}`` /
-    ``{secret:...}`` placeholder. References resolve under a deny-by-default allow-list
-    (``secret_allow`` globs); a literal passes through; empty returns ''. Keeps the password
-    addressed by reference instead of the connector reading it from the process env itself.
-    """
-    value = (value or "").strip()
-    if not value:
-        return ""
-    try:
-        from urirun.runtime import secrets as _secrets
-    except Exception:  # noqa: BLE001 - older urirun without the secrets layer
-        return value if ("://" not in value and "{" not in value) else ""
-    allow = [p for p in re.split(r"[,\s]+", secret_allow or "") if p]
-    if _secrets.has_secret(value):
-        return _secrets.fill_secrets(value, execute=True, allow=allow)
-    if value.startswith(("secret://", "getv://")):
-        return _secrets.resolve(value, execute=True, allow=allow).reveal()
-    return value
+# The password is addressed by reference (never embedded); the shared resolver lives in the
+# urirun SDK so every connector honours the secrets layer identically.
+_resolve_secret = urirun.resolve_secret
 
 
 def _imap_cfg(user: str = "", password: str = "", secret_allow: str = "") -> dict | None:
