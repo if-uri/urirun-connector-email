@@ -22,13 +22,26 @@ the package importable). The IMAP/SMTP routes reach a remote mail server, so the
 safety gate is urirun's `--execute` on the registry runner — not a function
 param.
 
-## Credentials (env, never the manifest)
+## Credentials (env or by reference, never the manifest)
+
+Hosts come from the env (`EMAIL_IMAP_HOST`, `EMAIL_SMTP_HOST`, `EMAIL_USER`,
+ports). The **password is addressed by reference** through the urirun secrets
+layer — pass it as a route argument:
+
+```bash
+# password from the OS keyring, resolved deny-by-default at the call boundary
+urirun-email send --to a@b.com --subject hi --body hello \
+  --password 'secret://keyring/email#pass' --secret_allow 'secret://keyring/email#pass'
+```
+
+`inbox_list` / `message_read` / `send` accept `user`, `password` and `secret_allow`.
+`password` may be a literal, a `getv://EMAIL_PASS` / `secret://…` reference, and an
+empty `password` falls back to the `EMAIL_PASS` env var (backward compatible):
 
 ```bash
 export EMAIL_IMAP_HOST=imap.example.com EMAIL_SMTP_HOST=smtp.example.com
-export EMAIL_USER=me@example.com EMAIL_PASS='app-password'
+export EMAIL_USER=me@example.com EMAIL_PASS='app-password'   # legacy fallback
 urirun-email list --limit 5
-urirun-email send --to a@b.com --subject hi --body hello
 ```
 
 Without credentials the routes return a fast "not configured" (`ok: false`)
