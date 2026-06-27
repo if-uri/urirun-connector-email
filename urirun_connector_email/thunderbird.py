@@ -70,6 +70,34 @@ SKIP_SUFFIXES = (
 )
 
 
+def _resolve_date_range(
+    start_date: str, end_date: str, months
+) -> tuple | dict[str, Any]:
+    """Validate dates and resolve month_set. Returns (t_start, t_end, month_set) or error dict."""
+    try:
+        t_start = _parse_date(start_date)
+        t_end = _parse_date(end_date)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if t_start >= t_end:
+        return {"ok": False, "error": "start_date must be earlier than end_date"}
+    try:
+        month_set = _months_from_input(months) if months else _months_between(t_start, t_end)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not month_set:
+        return {"ok": False, "error": "months resolved to an empty range"}
+    return t_start, t_end, month_set
+
+
+def _save_json_result(result: dict[str, Any], json_out: str) -> None:
+    if json_out:
+        out_path = Path(os.path.expanduser(json_out))
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        result["jsonOut"] = str(out_path)
+        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def export_invoices(
     *,
     start_date: str = "2026-03-01",
@@ -93,22 +121,11 @@ def export_invoices(
     the office workflow used on the Lenovo node. Set ``group_by_account=True``
     to add an account subdirectory below each month.
     """
-
     started = time.monotonic()
-    try:
-        t_start = _parse_date(start_date)
-        t_end = _parse_date(end_date)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    if t_start >= t_end:
-        return {"ok": False, "error": "start_date must be earlier than end_date"}
-
-    try:
-        month_set = _months_from_input(months) if months else _months_between(t_start, t_end)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    if not month_set:
-        return {"ok": False, "error": "months resolved to an empty range"}
+    date_result = _resolve_date_range(start_date, end_date, months)
+    if isinstance(date_result, dict):
+        return date_result
+    t_start, t_end, month_set = date_result
 
     terms = tuple(_normalise_text(v) for v in _split_values(search_terms, DEFAULT_TERMS))
     suffixes = tuple(_normalise_extension(v) for v in _split_values(extensions, DEFAULT_EXTENSIONS))
@@ -171,13 +188,7 @@ def export_invoices(
     }
     if include_details:
         result["details"] = details
-
-    if json_out:
-        out_path = Path(os.path.expanduser(json_out))
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        result["jsonOut"] = str(out_path)
-        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-
+    _save_json_result(result, json_out)
     return result
 
 
