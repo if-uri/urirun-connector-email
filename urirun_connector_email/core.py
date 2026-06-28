@@ -50,6 +50,16 @@ from .thunderbird import export_invoices as _export_thunderbird_invoices
 CONNECTOR_ID = "email"
 conn = urirun.connector(CONNECTOR_ID, scheme="email")
 
+try:  # Optional contract runtime guard; absent toolkit must not break standalone connector import.
+    from urirun_connectors_toolkit.contract_gate import enforce as _enforce
+    from urirun_connector_email.contracts import CONTRACTS as _CONTRACTS_EARLY
+
+    _enforce(conn, _CONTRACTS_EARLY,
+             validate=os.environ.get("URIRUN_CONTRACT_CHECK") == "1")
+    del _CONTRACTS_EARLY
+except Exception:  # noqa: BLE001 - contracts are CI/planner enrichment, not a hard runtime dependency
+    pass
+
 
 # --- config + helpers (real implementation) -------------------------------
 
@@ -241,6 +251,16 @@ def extract_local_invoices(
     return urirun.fail(str(result.get("error", "Thunderbird invoice extraction failed")),
                        connector=CONNECTOR_ID,
                        **{k: v for k, v in result.items() if k not in {"ok", "error"}})
+
+
+# Join route contracts onto live bindings so registry/MCP/A2A projections see declared output.
+try:
+    from urirun_connectors_toolkit.contract_gate import attach_contracts as _attach_contracts
+    from urirun_connector_email.contracts import CONTRACTS as _CONTRACTS
+
+    _attach_contracts(conn, _CONTRACTS)
+except Exception:  # noqa: BLE001 - enrichment only
+    pass
 
 
 # --- authoring surface: bindings / manifest / CLI --------------------------
